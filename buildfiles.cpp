@@ -4,6 +4,11 @@
 #include <fstream>
 #include <functional>
 
+#include <sstream>
+#include <boost/iostreams/filtering_streambuf.hpp>
+#include <boost/iostreams/copy.hpp>
+#include <boost/iostreams/filter/gzip.hpp>
+
 namespace fs = std::filesystem;
 
 
@@ -32,6 +37,29 @@ private:
 };
 
 
+static std::string compress(const std::string &file) {
+    std::ifstream f(file, std::ios::binary);
+    f.seekg(0, std::ios::end);
+    size_t size = f.tellg();
+    std::string data(size, ' ');
+    f.seekg(0);
+    f.read(&data[0], size); // по стандарту можно в C++11, по факту работает и на старых компиляторах
+
+
+    namespace bio = boost::iostreams;
+
+    std::stringstream compressed;
+    std::stringstream origin(data);
+
+    bio::filtering_streambuf <bio::input> out;
+    out.push(bio::gzip_compressor(bio::gzip_params(bio::gzip::best_compression)));
+    out.push(origin);
+    bio::copy(out, compressed);
+
+    return compressed.str();
+}
+
+
 static void addList(std::unique_ptr<FsData> &fs, std::vector<std::string> &fileList) {
     std::string prev_file;
     std::string prev_point;
@@ -39,7 +67,7 @@ static void addList(std::unique_ptr<FsData> &fs, std::vector<std::string> &fileL
 
     for (auto name = fileList.cbegin(); name != fileList.cend() - 1; ++name) {
         if (prev_point.empty()) prev_point = "NULL";
-        else prev_point = "&file" + prev_file;
+        else prev_point = "&file_" + prev_file;
 
         prev_file = *name;
 
@@ -49,7 +77,7 @@ static void addList(std::unique_ptr<FsData> &fs, std::vector<std::string> &fileL
         fs->write("sizeof(data_" + *name + ") - " + std::to_string(name->size() + 2) + "};\n\n");
     }
 
-    prev_point = "&file" + prev_file;
+    prev_point = "&file_" + prev_file;
     std::string lastName = fileList.back();
     fs->write("const struct fsdata_file file_" + lastName + " = {");
     fs->write(prev_point + ", data_" + lastName + ", ");
@@ -59,7 +87,7 @@ static void addList(std::unique_ptr<FsData> &fs, std::vector<std::string> &fileL
 }
 
 
-static std::string addFile(std::unique_ptr<FsData> &fs, fs::path path) {
+static std::string addFile(std::unique_ptr<FsData> &fs, fs::path path, bool isjscompress = false) {
     std::string raw_name = "";
     if (fs::is_symlink(path)) return raw_name;
 
@@ -97,15 +125,8 @@ static std::string addFile(std::unique_ptr<FsData> &fs, fs::path path) {
         writeByCh(file_name);
         fs->write("0,\n\t");
 
-        std::ifstream inf("." + file_name, std::ios::binary);
-        if (!inf.is_open()) {
-            std::cerr << "Error: Couldn't open " << path << std::endl;
-            return "";
-        }
-
-        char ch;
         uint8_t count = 0;
-        while(inf.get(ch)) {
+        auto writeByte = [&count, &fs](char ch) {
             char buf[10];
             std::sprintf(buf, "0x%X, ", (static_cast<uint8_t>(ch) & 0xff));
             fs->write(buf);
@@ -113,9 +134,28 @@ static std::string addFile(std::unique_ptr<FsData> &fs, fs::path path) {
                 count = 0;
                 fs->write("\n\t");
             }
-        }
+        };
 
-        inf.close();
+        if (isjscompress && path.extension() == ".js") {
+            auto data = compress("." + file_name);
+            for (auto ch : data) {
+                writeByte(ch);
+            }
+        } else {
+            std::ifstream inf("." + file_name, std::ios::binary);
+            if (!inf.is_open()) {
+                std::cerr << "Error: Couldn't open " << path << std::endl;
+                return "";
+            }
+
+            char ch;
+
+            while(inf.get(ch)) {
+                writeByte(ch);
+            }
+
+            inf.close();
+        }
 
         fs->write("0};\n\n");
     }
@@ -165,7 +205,7 @@ static void makeFsdatah(fs::path path, std::string &name) {
 }
 
 
-void buildFiles(std::string where, std::vector<std::string> files) {
+void buildFiles(std::string where, std::vector<std::string> files, bool jsgzip) {
     if (!fs::exists(where)) {
         std::cerr << "Directory not exists: " << where << std::endl;
         return;
@@ -194,13 +234,13 @@ void buildFiles(std::string where, std::vector<std::string> files) {
             fs::current_path(file);
 
             for (auto &&p : fs::recursive_directory_iterator(fs::current_path())) {
-                std::string rfile = addFile(fsdatac, fs::relative(fs::canonical(p.path())));
+                std::string rfile = addFile(fsdatac, fs::relative(fs::canonical(p.path())), jsgzip);
                 if (rfile != "") {
                     fileList.push_back(rfile);
                 }
             }
         } else {
-            std::string rfile = addFile(fsdatac, file);
+            std::string rfile = addFile(fsdatac, file, jsgzip);
             if (rfile != "") {
                 fileList.push_back(rfile);
             }

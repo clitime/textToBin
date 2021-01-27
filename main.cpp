@@ -10,7 +10,7 @@ class Progopt {
 public:
     std::vector<std::string> files;
     std::string where = "";
-
+    bool jsgzip = false;
 
     static Progopt &instance() {
         static Progopt obj;
@@ -47,6 +47,7 @@ int main(int argc, char const **argv) {
 
     ParsedOptions options = {
         {{"-w", "--where"},      true,  [&](std::string &&arg) { progOpt.where = arg; }},
+        {{"-j", "--jsgzip"},     false, [&](std::string &&) { progOpt.jsgzip = true; }},
         {{"-h", "/?", "--help"}, false, [&](std::string &&) { throw ProgoptError(); }}
     };
 
@@ -59,7 +60,7 @@ int main(int argc, char const **argv) {
         }
 
         std::cout << progOpt.where << std::endl;
-        buildFiles(progOpt.where, progOpt.files);
+        buildFiles(progOpt.where, progOpt.files, progOpt.jsgzip);
 
     } catch (ProgoptError &) {
         help();
